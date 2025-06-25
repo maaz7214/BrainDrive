@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Body, Response
+from fastapi import APIRouter, HTTPException, Depends, Body, Response, Query  
 from fastapi.responses import StreamingResponse
 import httpx
 import json
@@ -15,6 +15,13 @@ router = APIRouter()
 class OllamaResponse(BaseModel):
     status: str
     version: Optional[str] = None
+
+class LibraryModelsResponse(BaseModel):
+    models: List[Dict[str, Any]]
+    total_count: int
+    limit: int
+    skip: int
+    data_updated: str
 
 async def ensure_ollama_settings_definition(db: AsyncSession):
     """Ensure the Ollama settings definition exists"""
@@ -351,6 +358,319 @@ async def get_ollama_models(
                 )
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+
+
+@router.post("/pull")
+async def pull_ollama_model(
+    model_name: str = Body(..., embed=True),
+    server_url: str = Body(...),
+    api_key: Optional[str] = Body(None),
+    insecure: bool = Body(False),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Pull a model from the Ollama library with streaming progress
+    """
+    try:
+        # Clean and validate the URL
+        server_url = unquote(server_url).strip()
+        if not server_url.startswith(('http://', 'https://')):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid server URL. Must start with http:// or https://"
+            )
+
+        # Construct the full URL
+        full_url = f"{server_url.rstrip('/')}/api/pull"
+        
+        # Prepare headers
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        # Prepare payload
+        payload = {
+            "name": model_name,
+            "insecure": insecure,
+            "stream": True
+        }
+        
+        # Set timeout and disable redirects
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
+            try:
+                response = await client.post(full_url, headers=headers, json=payload)
+                
+                # Return streaming response
+                return StreamingResponse(
+                    stream_response(response),
+                    media_type="application/x-ndjson",
+                    status_code=response.status_code
+                )
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Connection timed out during model pull"
+                )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error pulling model: {str(e)}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during model pull: {str(e)}"
+        )
+
+@router.delete("/model/{model_name}")
+async def delete_ollama_model(
+    model_name: str,
+    server_url: str = Query(...),
+    api_key: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a model from the Ollama server
+    """
+    try:
+        # Clean and validate the URL
+        server_url = unquote(server_url).strip()
+        if not server_url.startswith(('http://', 'https://')):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid server URL. Must start with http:// or https://"
+            )
+
+        # Construct the full URL
+        full_url = f"{server_url.rstrip('/')}/api/delete"
+        
+        # Prepare headers
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        # Prepare payload
+        payload = {"name": model_name}
+        
+        # Set timeout and disable redirects
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            try:
+                response = await client.delete(full_url, headers=headers, json=payload)
+                
+                if response.status_code == 200:
+                    return {"status": "success", "model": model_name}
+                else:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Delete failed: {response.text}"
+                    )
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Delete operation timed out"
+                )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error deleting model: {str(e)}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during model deletion: {str(e)}"
+        )
+
+@router.get("/model/{model_name}", response_model=Dict[str, Any])
+async def get_ollama_model_details(
+    model_name: str,
+    server_url: str = Query(...),
+    api_key: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get details about a specific model
+    """
+    try:
+        # Clean and validate the URL
+        server_url = unquote(server_url).strip()
+        if not server_url.startswith(('http://', 'https://')):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid server URL. Must start with http:// or https://"
+            )
+
+        # Construct the full URL
+        full_url = f"{server_url.rstrip('/')}/api/show"
+        
+        # Prepare headers
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        # Prepare payload
+        payload = {"name": model_name}
+        
+        # Set timeout and disable redirects
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            try:
+                response = await client.post(full_url, headers=headers, json=payload)
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Failed to get model details: {response.text}"
+                    )
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Model details request timed out"
+                )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error fetching model details: {str(e)}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error fetching model details: {str(e)}"
+        )
+
+@router.post("/create")
+async def create_ollama_model(
+    model_name: str = Body(..., embed=True),
+    modelfile: str = Body(..., embed=True),
+    server_url: str = Body(...),
+    api_key: Optional[str] = Body(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a new model from a Modelfile with streaming response
+    """
+    try:
+        # Clean and validate the URL
+        server_url = unquote(server_url).strip()
+        if not server_url.startswith(('http://', 'https://')):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid server URL. Must start with http:// or https://"
+            )
+
+        # Construct the full URL
+        full_url = f"{server_url.rstrip('/')}/api/create"
+        
+        # Prepare headers
+        headers = {'Content-Type': 'application/json'}
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+            
+        # Prepare payload
+        payload = {
+            "name": model_name,
+            "modelfile": modelfile,
+            "stream": True
+        }
+        
+        # Set timeout and disable redirects
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=False) as client:
+            try:
+                response = await client.post(full_url, headers=headers, json=payload)
+                
+                # Return streaming response
+                return StreamingResponse(
+                    stream_response(response),
+                    media_type="application/x-ndjson",
+                    status_code=response.status_code
+                )
+            except httpx.TimeoutException:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Model creation timed out"
+                )
+            except httpx.RequestError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Error creating model: {str(e)}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during model creation: {str(e)}"
+        )
+    
+@router.get("/library/models", response_model=LibraryModelsResponse)
+async def get_ollama_library_models():
+    """
+    Get all available models from the Ollama library (ollamadb.dev)
+    with pagination support to fetch all results
+    """
+    try:
+        all_models = []
+        total_count = 0
+        page_size = 100  # Number of items to fetch per request
+        skip = 0
+        data_updated = None
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Increased timeout for multiple requests
+            while True:
+                url = f'https://ollamadb.dev/api/v1/models?skip={skip}&limit={page_size}'
+                response = await client.get(url)
+                
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Failed to fetch models: {response.text}"
+                    )
+                
+                data = response.json()
+                models = data.get('models', [])
+                all_models.extend(models)
+                
+                # Capture metadata from the first page
+                if skip == 0:
+                    total_count = data.get('total_count', 0)
+                    data_updated = data.get('data_updated')
+                
+                # Exit loop if we have all models or no more models
+                if not models or len(all_models) >= total_count:
+                    break
+                    
+                skip = len(all_models)  # Set skip to current count for next page
+            
+            return {
+                "models": all_models,
+                "total_count": total_count,
+                "limit": len(all_models),
+                "skip": 0,
+                "data_updated": data_updated
+            }
+            
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Connection to Ollama library timed out"
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Error connecting to Ollama library: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,

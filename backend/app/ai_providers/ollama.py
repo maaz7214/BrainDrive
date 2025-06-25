@@ -186,3 +186,5 @@ class OllamaProvider(AIProvider):
         except Exception as e:
             print(f"Chat formatting error: {e}")
             return "Hello, can you help me?"
+   
+    
