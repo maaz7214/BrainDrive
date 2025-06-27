@@ -1019,22 +1019,21 @@ class ComponentOllamaServer extends React.Component<
               </div>
             )}
             <div className="button-group">
-              <select
-                className="input-field"
-                value={this.state.selectedModel}
-                onChange={(e) =>
-                  this.setState({ selectedModel: e.target.value })
-                }
-              >
-                <option value="" disabled>
-                  Select a model
-                </option>
-                {this.state.modelList.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
+<select 
+  className="input-field"
+  size={3} // Shows 3 options at once
+  value={this.state.selectedModel}
+  onChange={(e) => this.setState({ selectedModel: e.target.value })}
+>
+  <option value="" disabled>
+    Select a model
+  </option>
+  {this.state.modelList.map((model) => (
+    <option key={model} value={model}>
+      {model}
+    </option>
+  ))}
+</select>
               <div className="group-pull">
                 <button
                   className=" button button-danger "

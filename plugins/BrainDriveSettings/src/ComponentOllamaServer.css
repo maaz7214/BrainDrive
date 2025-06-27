@@ -255,3 +255,20 @@
   border-color: #ef4444 !important;
   box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3) !important;
 }
+
+.input-field {
+  overflow-y: auto;
+}
+
+.input-field::-webkit-scrollbar {
+  width: 8px;
+}
+
+.input-field::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+.input-field::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
