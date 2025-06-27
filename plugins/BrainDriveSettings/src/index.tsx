@@ -13,8 +13,11 @@ export {
 };
 
 // For local development
-//if (process.env.NODE_ENV === 'development') {
-//  const { createRoot } = require('react-dom/client');
- // const root = createRoot(document.getElementById('root'));
-//  root.render(<Component />);
-//}
+if (process.env.NODE_ENV === 'development') {
+ const { createRoot } = require('react-dom/client');
+ const root = createRoot(document.getElementById('root'));
+ root.render(<ComponentOllamaServer services={{
+   api: undefined,
+   theme: undefined
+ }} />);
+}
