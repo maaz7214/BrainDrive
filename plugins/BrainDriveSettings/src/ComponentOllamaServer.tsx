@@ -1009,7 +1009,7 @@ loadModels = async () => {
                   style={{ width: "160px", height: "40px" }}
                   onClick={this.deleteModel}
                   disabled={
-                    this.state.isDeletingModel || !this.state.selectedModel
+                    this.state.isDeletingModel || !this.state.selectedModel || this.state.selectedModel === "Select a model to delete" || this.state.modelList.length === 0
                   }
                 >
                   <div style={{ display: "flex", alignItems: "center" }}>
