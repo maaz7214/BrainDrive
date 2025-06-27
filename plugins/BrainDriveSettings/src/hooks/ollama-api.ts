@@ -30,6 +30,7 @@ interface PullParams {
 }
 
 interface PullProgress {
+  error: any;
   status: string;
   digest?: string;
   total?: number;
@@ -57,8 +58,8 @@ class OllamaApiClient {
       method,
       headers,
       redirect: 'follow',
-        mode: 'cors', // Changed from 'no-cors'
-      credentials: 'omit' // Don't send credentials
+      mode: 'cors',
+      credentials: 'omit'
     };
     
     if (data) options.body = JSON.stringify(data);
@@ -97,8 +98,8 @@ class OllamaApiClient {
       method,
       headers,
       body: JSON.stringify(data),
-      mode: 'no-cors', // Explicit CORS mode (this is the default)
-      credentials: 'include'
+      mode: 'cors', // Fixed: Changed from 'no-cors' to 'cors'
+      credentials: 'omit' // Fixed: Changed from 'include' to 'omit'
     };
     
     try {
@@ -193,24 +194,3 @@ class OllamaApiClient {
 }
 
 export default OllamaApiClient;
-
-// Usage example:
-/*
-const client = new OllamaApiClient();
-
-// Pull with streaming progress
-await client.pullModel(
-  { name: 'llama2:7b' },
-  (progress) => {
-    console.log(`Status: ${progress.status}`);
-    if (progress.total && progress.completed) {
-      const percent = (progress.completed / progress.total * 100).toFixed(1);
-      console.log(`Progress: ${percent}%`);
-    }
-  }
-);
-
-// Or pull without streaming (synchronous)
-const result = await client.pullModelSync({ name: 'llama2:7b' });
-console.log(result);
-*/
