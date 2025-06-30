@@ -12,6 +12,7 @@ import {
   PlusIcon,
 } from "./icons";
 import OllamaApiClient from "./hooks/ollama-api";
+import CustomSelect from "./components/customselector";
 
 interface ApiResponse {
   data?: any;
@@ -73,6 +74,8 @@ class ComponentOllamaServer extends React.Component<
 > {
   private themeChangeListener: ((theme: string) => void) | null = null;
   private ollamaClient: OllamaApiClient;
+  private errorTimeout: NodeJS.Timeout | null = null; // Add timeout reference
+
   constructor(props: OllamaServerComponentProps) {
     super(props);
     this.state = {
@@ -96,10 +99,43 @@ class ComponentOllamaServer extends React.Component<
     this.ollamaClient = new OllamaApiClient();
   }
 
+  // Method to set error message with auto-clear
+  setErrorMessage = (message: string, autoClear: boolean = true) => {
+    // Clear any existing timeout
+    if (this.errorTimeout) {
+      clearTimeout(this.errorTimeout);
+      this.errorTimeout = null;
+    }
+
+    this.setState({ errorMessage: message });
+
+    // Set timeout to clear error message after 2 seconds if autoClear is true
+    if (autoClear && message) {
+      this.errorTimeout = setTimeout(() => {
+        this.setState({ errorMessage: "" });
+        this.errorTimeout = null;
+      }, 2000);
+    }
+  };
+
   componentDidMount() {
     this.loadSettings();
     this.initializeThemeService();
     this.loadModels();
+  }
+
+  componentWillUnmount() {
+    // Clear timeout on unmount
+    if (this.errorTimeout) {
+      clearTimeout(this.errorTimeout);
+      this.errorTimeout = null;
+    }
+
+    if (this.themeChangeListener && this.props.services?.theme) {
+      this.props.services.theme.removeThemeChangeListener(
+        this.themeChangeListener
+      );
+    }
   }
 
   updateOllamaClient = () => {
@@ -134,133 +170,170 @@ class ComponentOllamaServer extends React.Component<
         modelList: modelNames,
       });
 
-      console.log("Models loaded:", modelNames);
+      console.log("Models loaded:", this.state.modelList);
     } catch (error: any) {
       console.error("Error loading models:", error);
       this.setState({
         modelList: [],
-        errorMessage: `Error loading models: ${
-          error.message || "Unknown error"
-        }`,
       });
+      this.setErrorMessage(`Error loading models: ${error.message || "Unknown error"}`);
     }
   };
 
-  pullModel = async () => {
-    const { OllamaServername } = this.state;
+/**
+ * Clean model name by removing "ollama run" prefix and normalizing format
+ */
+cleanModelName = (modelName: string): string => {
+  if (!modelName) return "";
+  
+  let cleanName = modelName.trim();
+  
+  // Remove "ollama run " prefix (case insensitive)
+  const ollamaRunPrefix = /^ollama\s+run\s+/i;
+  if (ollamaRunPrefix.test(cleanName)) {
+    cleanName = cleanName.replace(ollamaRunPrefix, "");
+  }
+  
+  return cleanName.trim();
+};
 
-    if (!OllamaServername.trim()) {
-      this.setState({
-        errorMessage: "Please enter a model name to pull",
-        showValidationError: true,
-      });
-      return;
-    }
+/**
+ * Normalize model name for comparison by removing :latest suffix
+ */
+normalizeModelName = (modelName: string): string => {
+  if (!modelName) return "";
+  
+  // Remove :latest from the end if present
+  return modelName.replace(/:latest$/, "");
+};
 
-    // Remove "ollama run " prefix if present (case insensitive)
-    let cleanModelName = OllamaServername.trim();
-    const ollamaRunPrefix = /^ollama\s+run\s+/i;
-    if (ollamaRunPrefix.test(cleanModelName)) {
-      cleanModelName = cleanModelName.replace(ollamaRunPrefix, "");
-    }
+/**
+ * Check if a model exists in the model list (with normalization)
+ */
+isModelInList = (modelName: string, modelList: string[]): boolean => {
+  if (!modelName || !modelList.length) return false;
+  
+  const normalizedInput = this.normalizeModelName(modelName);
+  
+  return modelList.some(model => {
+    const normalizedModel = this.normalizeModelName(model);
+    return normalizedModel === normalizedInput;
+  });
+};
 
-    // Check if cleaned model name is empty
-    if (!cleanModelName.trim()) {
-      this.setState({ errorMessage: "Please enter a valid model name" });
-      return;
-    }
+/**
+ * Updated pullModel function with validation
+ */
+pullModel = async () => {
+  const { OllamaServername, modelList } = this.state;
 
-    // Check if model name is too long (max 100 characters as example)
-    const MAX_MODEL_NAME_LENGTH = 60;
-    if (cleanModelName.length > MAX_MODEL_NAME_LENGTH) {
-      console.warn(`Model name is too long: ${cleanModelName}`);
-      this.setState({
-        isPullingModel: false,
-        errorMessage: `Model name is too long. Maximum ${MAX_MODEL_NAME_LENGTH} characters allowed.`,
-        pullProgress: "",
-      });
-      return;
+  if (!OllamaServername.trim()) {
+    this.setErrorMessage("Please enter a model name to pull");
+    this.setState({ showValidationError: true });
+    return;
+  }
+
+  // Clean the model name
+  const cleanModelName = this.cleanModelName(OllamaServername);
+
+  // Check if cleaned model name is empty
+  if (!cleanModelName.trim()) {
+    this.setErrorMessage("Please enter a valid model name");
+    this.setState({ showValidationError: true });
+    return;
+  }
+
+  // Check if model already exists
+  if (this.isModelInList(cleanModelName, modelList)) {
+    this.setErrorMessage(`Model "${cleanModelName}" already exists in your list`);
+    this.setState({ showValidationError: true });
+    return;
+  }
+
+  // Check if model name is too long
+  const MAX_MODEL_NAME_LENGTH = 60;
+  if (cleanModelName.length > MAX_MODEL_NAME_LENGTH) {
+    console.warn(`Model name is too long: ${cleanModelName}`);
+    this.setState({
+      isPullingModel: false,
+      pullProgress: "",
+      showValidationError: true,
+    });
+    this.setErrorMessage(`Model name is too long. Maximum ${MAX_MODEL_NAME_LENGTH} characters allowed.`);
+    return;
+  }
+
+  this.setState({
+    isPullingModel: true,
+    errorMessage: "",
+    pullProgress: "",
+    showValidationError: false,
+  });
+
+  let hasError = false;
+  let errorMessage = "";
+
+  try {
+    this.updateOllamaClient();
+
+    await this.ollamaClient.pullModel(
+      {
+        name: cleanModelName, // Use cleaned name
+        stream: true,
+      },
+      (progress) => {
+        console.log("Pull progress:", progress);
+
+        if (progress.error) {
+          console.log("Progress error ", progress.error);
+          hasError = true;
+          errorMessage = `${progress.error}`;
+
+          // Set error state immediately
+          this.setState({
+            pullProgress: errorMessage,
+          });
+          this.setErrorMessage(errorMessage);
+          return; // Don't throw, just return
+        }
+
+        let progressMessage = `Status: ${progress.status}`;
+
+        if (progress.total && progress.completed) {
+          const percent = (
+            (progress.completed / progress.total) *
+            100
+          ).toFixed(1);
+          progressMessage += ` (${percent}%)`;
+        }
+
+        this.setState({ pullProgress: progressMessage });
+      }
+    );
+
+    // Check if error occurred during streaming
+    if (hasError) {
+      throw new Error(errorMessage);
     }
 
     this.setState({
-      isPullingModel: true,
+      isPullingModel: false,
+      OllamaServername: "",
       errorMessage: "",
       pullProgress: "",
-      showValidationError: false,
     });
 
-    let hasError = false;
-    let errorMessage = "";
-
-    try {
-      this.updateOllamaClient();
-
-      await this.ollamaClient.pullModel(
-        {
-          name: OllamaServername.trim(),
-          stream: true,
-        },
-        (progress) => {
-          console.log("Pull progress:", progress);
-
-          if (progress.error) {
-            console.log("Progress error ", progress.error);
-            hasError = true;
-            errorMessage = `${progress.error}`;
-
-            // Set error state immediately
-            this.setState({
-              pullProgress: errorMessage,
-              errorMessage: errorMessage,
-            });
-            return; // Don't throw, just return
-          }
-
-          let progressMessage = `Status: ${progress.status}`;
-
-          if (progress.total && progress.completed) {
-            const percent = (
-              (progress.completed / progress.total) *
-              100
-            ).toFixed(1);
-            progressMessage += ` (${percent}%)`;
-          }
-
-          this.setState({ pullProgress: progressMessage });
-        }
-      );
-
-      // Check if error occurred during streaming
-      if (hasError) {
-        throw new Error(errorMessage);
-      }
-
-      this.setState({
-        isPullingModel: false,
-        OllamaServername: "",
-        errorMessage: "",
-        pullProgress: "",
-      });
-
-      await this.loadModels();
-      alert(`Model "${OllamaServername.trim()}" pulled successfully!`);
-    } catch (error) {
-      console.error("Error pulling model:", error);
-      this.setState({
-        isPullingModel: false,
-        errorMessage: ` ${error || "Unknown error"}`,
-        pullProgress: "",
-      });
-    }
-  };
-
-  componentWillUnmount() {
-    if (this.themeChangeListener && this.props.services?.theme) {
-      this.props.services.theme.removeThemeChangeListener(
-        this.themeChangeListener
-      );
-    }
+    await this.loadModels();
+    alert(`Model "${cleanModelName}" pulled successfully!`);
+  } catch (error) {
+    console.error("Error pulling model:", error);
+    this.setState({
+      isPullingModel: false,
+      pullProgress: "",
+    });
+    this.setErrorMessage(`${error || "Unknown error"}`);
   }
+};
 
   /**
    * Initialize the theme service to listen for theme changes
@@ -298,7 +371,7 @@ class ComponentOllamaServer extends React.Component<
       selectedModel === "" ||
       selectedModel === "Select a model to delete"
     ) {
-      this.setState({ errorMessage: "Please select a model to delete" });
+      this.setErrorMessage("Please select a model to delete");
       return;
     }
 
@@ -327,14 +400,13 @@ class ComponentOllamaServer extends React.Component<
       await this.loadModels();
 
       alert(`Model "${selectedModel}" deleted successfully!`);
+      this.setState({selectedModel: ""})
     } catch (error: any) {
       console.error("Error deleting model:", error);
       this.setState({
         isDeletingModel: false,
-        errorMessage: `Error deleting model: ${
-          error.message || "Unknown error"
-        }`,
       });
+      this.setErrorMessage(`Error deleting model: ${error.message || "Unknown error"}`);
     }
   };
 
@@ -351,10 +423,8 @@ class ComponentOllamaServer extends React.Component<
     this.setState({ isLoading: true, errorMessage: "" });
 
     if (!this.props.services?.api) {
-      this.setState({
-        isLoading: false,
-        errorMessage: "API service not available",
-      });
+      this.setState({ isLoading: false });
+      this.setErrorMessage("API service not available");
       return;
     }
 
@@ -434,18 +504,14 @@ class ComponentOllamaServer extends React.Component<
         });
       }
     } catch (error: any) {
-      this.setState({
-        isLoading: false,
-        errorMessage: `Error loading settings: ${
-          error.message || "Unknown error"
-        }`,
-      });
+      this.setState({ isLoading: false });
+      this.setErrorMessage(`Error loading settings: ${error.message || "Unknown error"}`);
     }
   };
 
   saveSettings = async () => {
     if (!this.props.services?.api) {
-      this.setState({ errorMessage: "API service not available" });
+      this.setErrorMessage("API service not available");
       return;
     }
 
@@ -499,12 +565,8 @@ class ComponentOllamaServer extends React.Component<
           : "Settings saved successfully!"
       );
     } catch (error: any) {
-      this.setState({
-        isSaving: false,
-        errorMessage: `Error saving settings: ${
-          error.message || "Unknown error"
-        }`,
-      });
+      this.setState({ isSaving: false });
+      this.setErrorMessage(`Error saving settings: ${error.message || "Unknown error"}`);
     }
   };
 
@@ -613,7 +675,7 @@ class ComponentOllamaServer extends React.Component<
 
     if (!this.props.services?.api) {
       this.updateServerStatus(serverId, "error");
-      this.setState({ errorMessage: "API service not available" });
+      this.setErrorMessage("API service not available");
       return;
     }
 
@@ -635,17 +697,11 @@ class ComponentOllamaServer extends React.Component<
         this.updateServerStatus(serverId, "success");
       } else {
         this.updateServerStatus(serverId, "error");
-        this.setState({
-          errorMessage:
-            "Connection failed. Please check your server address and API key.",
-        });
+        this.setErrorMessage("Connection failed. Please check your server address and API key.");
       }
     } catch (error: any) {
       this.updateServerStatus(serverId, "error");
-      this.setState({
-        errorMessage:
-          "Connection failed. Please check your server address and API key.",
-      });
+      this.setErrorMessage("Connection failed. Please check your server address and API key.");
     }
   };
 
@@ -668,7 +724,7 @@ class ComponentOllamaServer extends React.Component<
     if (!server) return;
 
     if (!server.serverName.trim() || !server.serverAddress.trim()) {
-      this.setState({ errorMessage: "Server name and address are required" });
+      this.setErrorMessage("Server name and address are required");
       return;
     }
 
@@ -788,12 +844,6 @@ class ComponentOllamaServer extends React.Component<
             <CloseIcon />
           </button>
         </div>
-
-        {/* {errorMessage && (
-          <div className="form-section">
-            <div className="status-indicator status-error">{errorMessage}</div>
-          </div>
-        )} */}
 
         {!this.state.ModelState ? (
           <div className="form-section">
@@ -994,7 +1044,6 @@ class ComponentOllamaServer extends React.Component<
             <div className="group-pull">
               <button
                 className="button button-pull"
-                // onClick={() => this.updateServer(server.id)}
                 onClick={this.pullModel}
                 disabled={this.state.isPullingModel}
               >
@@ -1019,25 +1068,14 @@ class ComponentOllamaServer extends React.Component<
               </div>
             )}
             <div className="button-group">
-<select 
-  className="input-field"
-  size={3} // Shows 3 options at once
-  value={this.state.selectedModel}
-  onChange={(e) => this.setState({ selectedModel: e.target.value })}
->
-  <option value="" disabled>
-    Select a model
-  </option>
-  {this.state.modelList.map((model) => (
-    <option key={model} value={model}>
-      {model}
-    </option>
-  ))}
-</select>
+              <CustomSelect
+                options={this.state.modelList}
+                value={this.state.selectedModel}
+                onChange={(value) => this.setState({ selectedModel: value })}
+              />
               <div className="group-pull">
                 <button
                   className=" button button-danger "
-                  // onClick={() => }
                   style={{ width: "160px", height: "40px" }}
                   onClick={this.deleteModel}
                   disabled={
